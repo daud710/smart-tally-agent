@@ -1,5 +1,5 @@
 """
-ai_agent.py — AI Brain powered by Groq (llama3-70b-8192)
+ai_agent.py — AI Brain powered by Groq (llama-3.3-70b-versatile)
 Converts natural language accounting entries into structured voucher data.
 """
 import json
@@ -12,7 +12,7 @@ load_dotenv(override=True)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama3-70b-8192"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_MAX_TOKENS = 1000
 GROQ_TEMPERATURE = 0.1
 

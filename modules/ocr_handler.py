@@ -1,52 +1,33 @@
 """
-ocr_handler.py — OCR-based bill scanning using Pillow + Groq AI
-Extracts accounting data from uploaded bill/invoice images.
-Note: Tesseract is optional. If not installed, Groq vision-based parsing is used.
+ocr_handler.py — Bill scanning using Groq Vision API
+No Tesseract required. Sends image directly to Groq for AI-based extraction.
 """
+import base64
+import json
+import os
+import requests
+from dotenv import load_dotenv
 
-import re
-import io
-from modules.ai_agent import groq_call
-
-try:
-    import pytesseract
-    from PIL import Image
-    TESSERACT_AVAILABLE = True
-except ImportError:
-    TESSERACT_AVAILABLE = False
+load_dotenv(override=True)
 
 
-def extract_text_from_image(image_bytes: bytes) -> dict:
+def process_bill_image(image_bytes: bytes) -> dict:
     """
-    Extract raw text from a bill/invoice image using OCR.
-    Falls back gracefully if Tesseract is not installed.
-    
+    Send bill image to Groq Vision API and extract accounting data.
+
     Returns:
-        {"success": True, "text": str} or {"success": False, "error": str}
+        {"success": True, "data": {...}, "raw_text": str}
+        or {"success": False, "error": str}
     """
-    if not TESSERACT_AVAILABLE:
-        return {
-            "success": False,
-            "error": "OCR library not installed. Using AI-based parsing instead."
-        }
-    try:
-        from PIL import Image
-        image = Image.open(io.BytesIO(image_bytes))
-        text = pytesseract.image_to_string(image, lang="eng")
-        return {"success": True, "text": text}
-    except Exception as e:
-        return {"success": False, "error": f"OCR failed: {str(e)}"}
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        return {"success": False, "error": "GROQ_API_KEY is not set."}
 
+    # Encode image to base64
+    b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-def parse_bill_with_ai(image_text: str) -> dict:
-    """
-    Use Groq AI to parse extracted bill text into structured accounting data.
-    
-    Returns:
-        {"success": True, "data": {...}} or {"success": False, "error": str}
-    """
     system_prompt = """You are an expert at reading Indian invoices and bills.
-Extract the following information from the bill text and return ONLY valid JSON:
+Extract the following information and return ONLY valid JSON (no markdown, no explanation):
 {
   "vendor_name": "supplier/vendor name",
   "invoice_number": "invoice number",
@@ -57,49 +38,70 @@ Extract the following information from the bill text and return ONLY valid JSON:
   "igst": numeric value,
   "total_amount": numeric value,
   "gst_rate": numeric rate (5, 12, 18, or 28),
+  "gstin": "vendor GSTIN if visible",
   "hsn_code": "HSN code if visible",
   "narration": "brief description of goods/services"
 }
-If any field is not found, use null or 0 for numeric fields and empty string for text."""
+If any field is not found, use null or 0 for numeric fields and empty string for text.
+Return ONLY the JSON object."""
 
-    import json
-    response = groq_call(system_prompt, f"Extract data from this bill:\n\n{image_text}")
-    if response.startswith("ERROR:"):
-        return {"success": False, "error": response}
+    payload = {
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": system_prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{b64_image}"
+                        }
+                    }
+                ]
+            }
+        ],
+        "max_tokens": 1000,
+        "temperature": 0.1
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
     try:
-        cleaned = response.strip().strip("```json").strip("```").strip()
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        resp.raise_for_status()
+        raw_text = resp.json()["choices"][0]["message"]["content"]
+
+        # Parse JSON from response
+        cleaned = raw_text.strip().strip("```json").strip("```").strip()
         data = json.loads(cleaned)
-        return {"success": True, "data": data}
-    except Exception as e:
-        return {"success": False, "error": f"Could not parse AI response: {str(e)}", "raw": response}
 
-
-def process_bill_image(image_bytes: bytes) -> dict:
-    """
-    Full pipeline: OCR the image, then parse with AI.
-    
-    Returns:
-        {"success": True, "data": {...}, "raw_text": str}
-    """
-    ocr_result = extract_text_from_image(image_bytes)
-    if not ocr_result["success"]:
-        return {
-            "success": False,
-            "error": ocr_result["error"],
-            "tip": "Upload a clear image of the bill. Make sure Tesseract OCR is installed."
-        }
-
-    raw_text = ocr_result["text"]
-    parse_result = parse_bill_with_ai(raw_text)
-
-    if parse_result["success"]:
         return {
             "success": True,
-            "data": parse_result["data"],
+            "data": data,
             "raw_text": raw_text
         }
-    return {
-        "success": False,
-        "error": parse_result["error"],
-        "raw_text": raw_text
-    }
+
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "Request timed out — check internet connection"}
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot reach Groq — no internet connection"}
+    except json.JSONDecodeError as e:
+        return {
+            "success": False,
+            "error": f"AI response parse failed: {str(e)}",
+            "raw_text": raw_text if 'raw_text' in locals() else ""
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Error: {str(e)}"}
