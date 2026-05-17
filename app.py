@@ -303,6 +303,7 @@ elif "Company Setup" in MODULE:
 
 elif "Ledger" in MODULE:
     st.title("Ledger Management")
+    from agents.ledger_agent import TALLY_GROUPS
 
     tab1, tab2 = st.tabs(["Create Single Ledger", "Bulk Import (Excel)"])
 
@@ -311,37 +312,104 @@ elif "Ledger" in MODULE:
         col1, col2 = st.columns(2)
         with col1:
             l_name   = st.text_input("Ledger Name*", placeholder="e.g. Ramesh Traders")
-            l_parent = st.selectbox("Parent Group*", [
-                "Sundry Debtors", "Sundry Creditors", "Bank Accounts",
-                "Cash-in-Hand", "Sales Accounts", "Purchase Accounts",
-                "Duties & Taxes", "Indirect Expenses", "Indirect Income",
-                "Direct Expenses", "Direct Income", "Capital Account",
-                "Loans (Liability)", "Fixed Assets"
-            ])
+            l_parent = st.selectbox("Under Group*", TALLY_GROUPS)
+            l_gstin  = st.text_input("GSTIN (optional)", placeholder="15-char GSTIN").upper()
+            l_state  = st.selectbox("State (optional)", [""] + INDIAN_STATES)
+            l_ob     = st.number_input("Opening Balance ₹ (0 = nil)", min_value=0.0, step=0.01)
         with col2:
-            l_gstin = st.text_input("GSTIN (optional)", placeholder="15-char GSTIN")
-            l_state = st.selectbox("State (optional)", [""] + INDIAN_STATES)
+            l_mobile = st.text_input("Mobile (optional)", placeholder="10-digit mobile")
+            l_email  = st.text_input("Email (optional)", placeholder="party@example.com")
+            l_cl     = st.number_input("Credit Limit ₹ (0 = no limit)", min_value=0.0, step=100.0)
+            l_cd     = st.number_input("Credit Days (0 = no limit)", min_value=0, step=1)
+
+        if l_parent == "Bank Accounts":
+            st.markdown("**Bank Details**")
+            bc1, bc2, bc3 = st.columns(3)
+            with bc1:
+                l_bank_ac = st.text_input("Bank Account No*", placeholder="Account number")
+            with bc2:
+                l_bank_nm = st.text_input("Bank Name*", placeholder="e.g. HDFC Bank")
+            with bc3:
+                l_ifsc    = st.text_input("IFSC Code*", placeholder="e.g. HDFC0001234").upper()
+        else:
+            l_bank_ac = l_bank_nm = l_ifsc = ""
+
+        if l_gstin:
+            gst_chk = GSTINValidator.validate(l_gstin)
+            if gst_chk["valid"]:
+                st.success(f"Valid GSTIN — State Code: {gst_chk['state_code']}")
+            else:
+                st.error(gst_chk["message"])
 
         if st.button("Create Ledger", type="primary", disabled=not l_name):
-            result = create_single_ledger(l_name, l_parent, l_gstin, l_state)
+            result = create_single_ledger(
+                name=l_name, parent=l_parent,
+                gstin=l_gstin, state=l_state,
+                opening_balance=l_ob,
+                bank_ac_no=l_bank_ac, bank_name=l_bank_nm, ifsc=l_ifsc,
+                mobile=l_mobile, email=l_email,
+                credit_limit=l_cl, credit_days=int(l_cd),
+            )
             show_result(result)
+
+        st.divider()
+        st.subheader("Quick Create — Common Ledgers")
+        st.caption("One-click create commonly needed ledgers")
+        qcol1, qcol2, qcol3, qcol4 = st.columns(4)
+        with qcol1:
+            if st.button("➕ Cash"):
+                show_result(create_single_ledger("Cash", "Cash-in-Hand"))
+        with qcol2:
+            if st.button("➕ Bank Account"):
+                show_result(create_single_ledger("Bank Account", "Bank Accounts"))
+        with qcol3:
+            if st.button("➕ Sales A/c"):
+                show_result(create_single_ledger("Sales Account", "Sales Accounts"))
+        with qcol4:
+            if st.button("➕ Purchase A/c"):
+                show_result(create_single_ledger("Purchase Account", "Purchase Accounts"))
+
+        qcol5, qcol6, qcol7, qcol8 = st.columns(4)
+        with qcol5:
+            if st.button("➕ Discount Given"):
+                show_result(create_single_ledger("Discount Given", "Indirect Expenses"))
+        with qcol6:
+            if st.button("➕ Discount Received"):
+                show_result(create_single_ledger("Discount Received", "Indirect Incomes"))
+        with qcol7:
+            if st.button("➕ Freight Charges"):
+                show_result(create_single_ledger("Freight Charges", "Indirect Expenses"))
+        with qcol8:
+            if st.button("➕ Round Off"):
+                show_result(create_single_ledger("Round Off", "Indirect Expenses"))
 
     with tab2:
         st.subheader("Bulk Ledger Import from Excel")
+        st.info("**Under Group** column mein dropdown list hai — manually type karne ki zaroorat nahi!")
         col1, col2 = st.columns([2, 1])
         with col1:
             uploaded = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
         with col2:
             template = create_ledger_template()
-            st.download_button("Download Template", template,
-                               "ledger_template.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(
+                "⬇️ Download Template (with Dropdowns)",
+                template,
+                "ledger_template.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+        st.markdown("**Template mein yeh columns hain:**")
+        cols_info = st.columns(4)
+        cols_info[0].markdown("✅ Ledger Name\n✅ Under Group (dropdown)\n✅ GSTIN")
+        cols_info[1].markdown("✅ State (dropdown)\n✅ Opening Balance\n✅ Bank Account No")
+        cols_info[2].markdown("✅ Bank Name\n✅ IFSC Code\n✅ Mobile")
+        cols_info[3].markdown("✅ Email\n✅ Credit Limit\n✅ Credit Days")
 
         if uploaded and st.button("Import Ledgers", type="primary"):
-            with st.spinner("Creating ledgers..."):
+            with st.spinner("Creating ledgers in Tally..."):
                 result = create_ledgers_from_excel(uploaded.read())
             st.success(f"Done: {result['success']} created, {result['failed']} failed, {result['skipped']} skipped")
-            if result["details"]:
+            if result.get("details"):
                 import pandas as pd
                 st.dataframe(pd.DataFrame(result["details"]), use_container_width=True)
 
